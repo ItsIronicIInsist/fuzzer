@@ -1,15 +1,18 @@
+#![feature(map_try_insert)]
+
 use std::env;
 use std::fs::{File, remove_file, create_dir_all};
 use std::io::{Read,Write};
 use std::ffi::CString;
 use std::time;
+use std::collections::HashMap;
+use std::os::unix::fs::FileExt;
 
 use rand::Rng;
 
 use nix::unistd::{fork, execvp, ForkResult};
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::sys::signal::Signal;
-
 
 fn main() {
 
@@ -45,16 +48,17 @@ fn main() {
 	let start = time::Instant::now();
 	fuzz(&mut data);
 	let elapsed = start.elapsed();
-	eprintln!("Fuzzing 100000 iterations took {} seconds", elapsed.as_secs());
+	eprintln!("Fuzzing 10000 iterations took {} seconds", elapsed.as_secs());
 
 	return;
 }
 
 fn fuzz(data: &mut Vec<u8>) {
 	let prog_name = CString::new("exif").unwrap();
-	for i in 0..10000 {
-		let mut to_mutate = data.clone();
+	let mut mutated_jpg = File::create("mutated.jpg").unwrap();
+	let arg = CString::new("mutated.jpg").unwrap();
 
+	for i in 0..10000 {
 		/*
 		if i % 2 == 0 {
 			flip_bits(&mut to_mutate);
@@ -63,36 +67,29 @@ fn fuzz(data: &mut Vec<u8>) {
 			magic(&mut to_mutate);
 		}
 		*/
-		flip_bits(&mut to_mutate);
+		let altered_bytes = flip_bits(data);
 		
-
-		let mut mutated_jpg = File::create(format!("./crashes/crash-{}.jpg",i )).unwrap();
-		mutated_jpg.write(&mut to_mutate).unwrap();
+		mutated_jpg.write_at(data, 0).unwrap();
 
 		match unsafe{fork()} {
 			
 			Ok(ForkResult::Child) => {
-				//this isnt correct, need to provide jpeg_fuzz and its args
-				let arg = CString::new(format!("./crashes/crash-{}.jpg", i)).unwrap();
-
-				execvp(&prog_name, &[prog_name.clone(), arg]).unwrap();
-
+				execvp(&prog_name, &[&prog_name, &arg]).unwrap();
 			},
 
 			//child is type Pid
 			Ok(ForkResult::Parent {child}) => {
-				//wait for fuzzer to have a state transition. Most likely it exiting - could also be by a signal
+				//wait for fuzzee to have a state transition. Most likely it exiting - could also be by a signal
 				
 				let wait_event = waitpid(child, None).unwrap();
 				match wait_event {
 					WaitStatus::Signaled(_, sig, _)  => {
-						if sig != Signal::SIGSEGV {
-							remove_file(format!("./crashes/crash-{}.jpg", i)).unwrap();
+						if sig == Signal::SIGSEGV {
+							let mut crash_report = File::create(format!("./crashes/crash-{}.jpg", i)).unwrap();
+							crash_report.write(data);
 						}
 					},
-					_ => {
-						remove_file(format!("./crashes/crash-{}.jpg", i)).unwrap();
-					},
+					_ => {},
 				};
 			},
 
@@ -104,15 +101,22 @@ fn fuzz(data: &mut Vec<u8>) {
 		if i % 100 == 0 {
 			eprintln!("{} loops finished", i);
 		}
+
+		for (idx, byte) in altered_bytes.iter() {
+			data[*idx] = *byte;
+		}
 	}
 }
 
 
 //flips a random bit in a random byte in the data
-fn flip_bits(data: &mut [u8]) {
+fn flip_bits(data: &mut [u8]) -> HashMap<usize, u8> {
 	let num_flips : usize = (((data.len() -4) as f64) * 0.01).floor() as usize;
 	let mut idxs : Vec<usize> =  Vec::with_capacity( num_flips);
 	let mut rng = rand::thread_rng();
+	//the original unaltered bytes. This way we dont need to clone the data each time, and can instead just recover the data
+	
+	let mut original_bytes : HashMap<usize, u8> = HashMap::with_capacity(num_flips);
 
 	//get indexes to be flipped
 	for _ in 0..num_flips {
@@ -120,8 +124,12 @@ fn flip_bits(data: &mut [u8]) {
 	}
 
 	for i in 0..num_flips {
-		data[idxs[i]] ^= 1<<(rng.gen_range(0..8));
+	//we dont really care if try_insert returns an error
+	//That occurs if by chance, we randomly select the same index twice. If we do, the second entry wouldnt have the proper original 'byte', so we ignore it
+		original_bytes.try_insert(idxs[i], data[idxs[i]]);
+		data[idxs[i]] ^= 1<<(rng.gen_range(0..8) as u8);
 	}
+	original_bytes
 }
 
 //uses 'magic' values, which typically revolve around max/min values for shorts, ints, longs
