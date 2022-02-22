@@ -1,22 +1,20 @@
 #![feature(map_try_insert)]
 
 use std::env;
-use std::fs::{File, remove_file, create_dir_all};
+use std::fs::{File, create_dir_all};
 use std::io::{Read,Write};
 use std::ffi::CString;
 use std::time;
-use std::collections::HashMap;
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::IntoRawFd;
-use std::hash::BuildHasherDefault;
 
-use rand::Rng;
+use rand::{Rng, SeedableRng};
+//use rand::rngs::SmallRng;
+use rand::rngs::SmallRng;
 
 use nix::unistd::{fork, execvp, ForkResult, dup2};
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::sys::signal::Signal;
-
-use rustc_hash::FxHashMap;
 
 fn main() {
 
@@ -57,6 +55,7 @@ fn main() {
 	return;
 }
 
+#[inline(never)]
 fn fuzz(data: &mut Vec<u8>) {
 	let prog_name = CString::new("exif").unwrap();
 	let mut mutated_jpg = File::create("mutated.jpg").unwrap();
@@ -71,7 +70,12 @@ fn fuzz(data: &mut Vec<u8>) {
 			magic(&mut to_mutate);
 		}
 		*/
-		let altered_bytes = flip_bits(data);
+		//have to reverse the vector of original bytes
+		//the byte replaced by random values are randomly chosen. So imagine the case where the same byte is chosen twice
+		//in the original vector, the first entry will have the valid byte for that index, and the second entry will be some dangerous junk
+		//could check each index is unique in flip_bits, but that seems slow
+		//so instead, here we reverse the vector. Such that any duplicate bytes, the 'correct' byte is the one that is fixed last.
+		let altered_bytes : Vec<(usize, u8)> = flip_bits(data).into_iter().rev().collect();
 		
 		mutated_jpg.write_at(data, 0).unwrap();
 
@@ -111,23 +115,23 @@ fn fuzz(data: &mut Vec<u8>) {
 			eprintln!("{} loops finished", i);
 		}
 
-		for (idx, byte) in altered_bytes.iter() {
-			data[*idx] = *byte;
+		
+		for (idx, byte) in altered_bytes {
+			data[idx] = byte;
 		}
 	}
 }
 
 
 //flips a random bit in a random byte in the data
-fn flip_bits(data: &mut [u8]) -> FxHashMap<usize, u8> {
+#[inline(never)]
+fn flip_bits(data: &mut [u8]) -> Vec<(usize, u8)> {
 	let num_flips : usize = (((data.len() -4) as f64) * 0.01).floor() as usize;
 	let mut idxs : Vec<usize> =  Vec::with_capacity( num_flips);
-	let mut rng = rand::thread_rng();
-	//the original unaltered bytes. This way we dont need to clone the data each time, and can instead just recover the data
+	let mut rng = SmallRng::from_entropy();
 	
-	//let mut original_bytes : HashMap<usize, u8> = HashMap::with_capacity_and_hasher(num_flips, FxHashMap::default());
-	let mut original_bytes : FxHashMap<usize, u8> = FxHashMap::default();
-	original_bytes.reserve(num_flips);
+	//the original unaltered bytes. This way we dont need to clone the data each time, and can instead just recover the data
+	let mut  original_bytes = Vec::with_capacity(num_flips);
 
 	//get indexes to be flipped
 	for _ in 0..num_flips {
@@ -135,13 +139,19 @@ fn flip_bits(data: &mut [u8]) -> FxHashMap<usize, u8> {
 	}
 
 	for i in 0..num_flips {
-	//we dont really care if try_insert returns an error
-	//That occurs if by chance, we randomly select the same index twice. If we do, the second entry wouldnt have the proper original 'byte', so we ignore it
-		original_bytes.try_insert(idxs[i], data[idxs[i]]);
-		data[idxs[i]] ^= 1<<(rng.gen_range(0..8) as u8);
+		original_bytes.push((idxs[i], data[idxs[i]]));
+		data[idxs[i]] = rng.gen::<u8>();
 	}
 	original_bytes
 }
+
+
+
+
+
+
+
+
 
 //uses 'magic' values, which typically revolve around max/min values for shorts, ints, longs
 fn magic(data: &mut [u8]) {
@@ -181,5 +191,4 @@ fn magic(data: &mut [u8]) {
 			data[idxs[i] + j] = (magic >> (j*8)) as u8;
 		}
 	}
-	
 }
