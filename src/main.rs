@@ -7,12 +7,16 @@ use std::ffi::CString;
 use std::time;
 use std::collections::HashMap;
 use std::os::unix::fs::FileExt;
+use std::os::unix::io::IntoRawFd;
+use std::hash::BuildHasherDefault;
 
 use rand::Rng;
 
-use nix::unistd::{fork, execvp, ForkResult};
+use nix::unistd::{fork, execvp, ForkResult, dup2};
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::sys::signal::Signal;
+
+use rustc_hash::FxHashMap;
 
 fn main() {
 
@@ -58,7 +62,7 @@ fn fuzz(data: &mut Vec<u8>) {
 	let mut mutated_jpg = File::create("mutated.jpg").unwrap();
 	let arg = CString::new("mutated.jpg").unwrap();
 
-	for i in 0..10000 {
+	for i in 0..1000 {
 		/*
 		if i % 2 == 0 {
 			flip_bits(&mut to_mutate);
@@ -74,6 +78,11 @@ fn fuzz(data: &mut Vec<u8>) {
 		match unsafe{fork()} {
 			
 			Ok(ForkResult::Child) => {
+				let null_fd = File::open("/dev/null").unwrap().into_raw_fd();
+
+				dup2(null_fd, 1);
+				dup2(null_fd, 2);
+
 				execvp(&prog_name, &[&prog_name, &arg]).unwrap();
 			},
 
@@ -110,13 +119,15 @@ fn fuzz(data: &mut Vec<u8>) {
 
 
 //flips a random bit in a random byte in the data
-fn flip_bits(data: &mut [u8]) -> HashMap<usize, u8> {
+fn flip_bits(data: &mut [u8]) -> FxHashMap<usize, u8> {
 	let num_flips : usize = (((data.len() -4) as f64) * 0.01).floor() as usize;
 	let mut idxs : Vec<usize> =  Vec::with_capacity( num_flips);
 	let mut rng = rand::thread_rng();
 	//the original unaltered bytes. This way we dont need to clone the data each time, and can instead just recover the data
 	
-	let mut original_bytes : HashMap<usize, u8> = HashMap::with_capacity(num_flips);
+	//let mut original_bytes : HashMap<usize, u8> = HashMap::with_capacity_and_hasher(num_flips, FxHashMap::default());
+	let mut original_bytes : FxHashMap<usize, u8> = FxHashMap::default();
+	original_bytes.reserve(num_flips);
 
 	//get indexes to be flipped
 	for _ in 0..num_flips {
