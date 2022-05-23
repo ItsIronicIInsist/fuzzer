@@ -55,13 +55,15 @@ fn main() {
 	return;
 }
 
+
+//no inlining so that profiling properly reports the functions
 #[inline(never)]
 fn fuzz(data: &mut Vec<u8>) {
 	let prog_name = CString::new("exif").unwrap();
 	let mut mutated_jpg = File::create("mutated.jpg").unwrap();
 	let arg = CString::new("mutated.jpg").unwrap();
 
-	for i in 0..1000 {
+	for i in 0..10000 {
 		/*
 		if i % 2 == 0 {
 			flip_bits(&mut to_mutate);
@@ -84,6 +86,7 @@ fn fuzz(data: &mut Vec<u8>) {
 			Ok(ForkResult::Child) => {
 				let null_fd = File::open("/dev/null").unwrap().into_raw_fd();
 
+				//we dont want stdout/stderr, so redirect them to /dev/null
 				dup2(null_fd, 1);
 				dup2(null_fd, 2);
 
@@ -115,7 +118,7 @@ fn fuzz(data: &mut Vec<u8>) {
 			eprintln!("{} loops finished", i);
 		}
 
-		
+		//restoring the file to its original state	
 		for (idx, byte) in altered_bytes {
 			data[idx] = byte;
 		}
@@ -144,12 +147,6 @@ fn flip_bits(data: &mut [u8]) -> Vec<(usize, u8)> {
 	}
 	original_bytes
 }
-
-
-
-
-
-
 
 
 
