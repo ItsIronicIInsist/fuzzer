@@ -10,3 +10,4 @@ edition = "2018"
 rand = { version =  "0.8.4", features=["small_rng"]}
 nix = "0.22.0"
 rustc-hash = "1.1.0"
+clap = { version = "3.1.18", features = ["derive"]}
